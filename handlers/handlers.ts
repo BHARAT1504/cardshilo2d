@@ -1,0 +1,214 @@
+import type { Socket } from "socket.io";
+import { PlrBetActions, type BetAction, type IBetObject, type IGameData, type Info, type TRoomId } from "../interfaces";
+import { delCache, getCache, setCache } from "../cache/redis";
+import { betChecker, generateDeck, probMultCalculator, resetGameState, shuffleDeck, validateBet } from "../utilities/roundResult";
+import { updateBalanceFromAccount } from "../utilities/v2Transactions";
+import { ROOM_CONFIG } from "../constants/constant";
+
+
+export const joinRoom = async (socket: Socket, rmId: string[]) => {
+    try {
+        const info: Info = await getCache(socket.id);
+        if (!info) return socket.emit("betError", "User details not found.");
+
+        let roomId = rmId.join("");
+        if (!roomId || !Object.keys(ROOM_CONFIG).includes(roomId)) return socket.emit("betError", "invalid room id");
+
+        const shuffledDeck = shuffleDeck(generateDeck());
+        const firstEightCards = shuffledDeck.splice(0, 8);
+
+        const gameData = resetGameState(info, roomId as TRoomId, 0, firstEightCards, shuffledDeck);
+        await setCache(`GM:${info.urId}:${info.operatorId}`, gameData);
+        socket.emit("gameData", gameData)
+
+        return;
+    } catch (error: any) {
+        console.error("error occured", error.message);
+    }
+}
+
+export const startGame = async (socket: Socket, payload: string[]) => {
+    try {
+        const info: Info = await getCache(socket.id);
+        if (!info) return socket.emit("betError", "User details not found.");
+
+        let [roomId, betAmt, atn]: [TRoomId, string, string] = payload as [TRoomId, string, string];
+        console.log([roomId, betAmt, atn]);
+        const isValidBetAmount = validateBet(Number(betAmt), roomId, info.bl, socket);
+        if (!isValidBetAmount) return;
+
+        const gameDataKey = `GM:${info.urId}:${info.operatorId}`;
+        const gameData: IGameData = await getCache(gameDataKey);
+        if (!gameData) return socket.emit("betError", "invalid bet session");
+
+        const debitTransaction = {
+            id: gameData.lobby_id,
+            bet_amount: Number(betAmt),
+            game_id: info.gmId,
+            user_id: info.urId,
+            ip: info.ip,
+            txn_id: gameData.lobby_id
+        };
+
+        const playerDetailsForTxn = { game_id: info.gmId, operatorId: info.operatorId, token: info.token };
+
+        const txnDbt: IBetObject | boolean = await updateBalanceFromAccount(debitTransaction, "DEBIT", playerDetailsForTxn);
+        if (!txnDbt) return socket.emit("betError", "Bet Cancelled by Upstream");
+        // @ts-ignore
+        gameData.txn_id = txnDbt.txn_id;
+        gameData.bet_amount = Number(betAmt);
+
+        await setCache(`GM:${info.urId}:${info.operatorId}`, gameData);
+
+        return await pickCard(socket, [atn]);
+    } catch (error: any) {
+        console.error("error occured", error.message);
+    }
+}
+
+export const pickCard = async (socket: Socket, betData: string[]) => {
+    try {
+        const info: Info = await getCache(socket.id);
+        if (!info) socket.emit("betError", "User details not found.");
+
+        const gameDataKey = `GM:${info.urId}:${info.operatorId}`;
+        let gameData: IGameData = await getCache(gameDataKey);
+        if (!gameData) return socket.emit("betError", "Game play data not found");
+
+        const plAtn = betData.join("");
+        if (!PlrBetActions.includes(plAtn)) return socket.emit("betError", "Invalid Action");
+
+        const pkCdIdx = Math.floor(Math.random() * gameData.deck.length);
+        const pkdCd = gameData.deck.splice(pkCdIdx, 1).join("");
+
+        const cmprCd = gameData.cardsHistory[gameData.cardsHistory.length - 1];
+        gameData.cardsHistory.push(pkdCd);
+        const cardToPushInDeck = gameData.cardsHistory.shift();
+
+        gameData.deck.push(cardToPushInDeck as string);
+
+        gameData.category = plAtn;
+        gameData.revealedCount++;
+        const { chose, mult, win } = betChecker(gameData.mults, pkdCd, cmprCd, plAtn as BetAction)
+        gameData.mult_bank += mult;
+        gameData.status = win ? "win" : "loss";
+        gameData.category = chose;
+        gameData.mults = probMultCalculator(gameData.mult_bank, pkdCd);
+
+        if (!win) {
+            gameData = resetGameState(info, gameData.room_id as TRoomId, 0, gameData.cardsHistory, gameData.deck)
+            socket.emit("pickCardResult", { message: "you loss" });
+        }
+        await setCache(gameDataKey, gameData);
+        socket.emit("gameData", gameData);
+
+        socket.emit("pickCardResult", { message: "card picked successfully", mult, chose, win });
+
+        return;
+
+    } catch (error: any) {
+        console.error("error occured", error.message);
+    }
+}
+
+export const cashoutHandler = async (socket: Socket) => {
+    try {
+        const info: Info = await getCache(socket.id);
+        if (!info) socket.emit("betError", "User details not found.");
+
+        const gameDataKey = `GM:${info.urId}:${info.operatorId}`;
+        let gameData: IGameData = await getCache(gameDataKey);
+        if (!gameData || !gameData.mult_bank) return socket.emit("betError", "Game session data not found");
+
+        const payout = Math.min(gameData.bet_amount * gameData.mult_bank, gameData.roomConfig.max_co);
+        if (!payout) return socket.emit("betError", "No payout for current game session.")
+
+        let cdtObj = {
+            id: gameData.lobby_id,
+            user_id: info.urId,
+            game_id: info.gmId,
+            bet_amount: Number(gameData.bet_amount.toFixed(2)),
+            winning_amount: Number(payout.toFixed(2)),
+            txn_id: gameData.txn_id,
+            ip: info.ip
+        };
+
+        let cdtTxn = await updateBalanceFromAccount(cdtObj, "CREDIT", {
+            game_id: info.gmId,
+            operatorId: info.operatorId,
+            token: info.token,
+        });
+
+        if (!cdtTxn) console.info("Credit failed for user");
+        info.bl += Number(payout.toFixed(2));
+        await setCache(socket.id, info);
+        socket.emit("info", info);
+        socket.emit("cashout", "Cashout done successfully, cashout amount:" + payout);
+
+        const shuffledDeck = shuffleDeck(generateDeck());
+        const firstEightCards = shuffledDeck.splice(0, 8);
+        gameData = resetGameState(info, gameData.room_id as TRoomId, 0, firstEightCards, shuffledDeck)
+        await setCache(gameDataKey, gameData);
+        socket.emit("gameData", gameData);
+
+        return;
+    } catch (error: any) {
+        console.error("error occured", error.message);
+    }
+}
+
+export const leaveRoom = async (socket: Socket,) => {
+    try {
+        const info: Info = await getCache(socket.id);
+        if (!info) socket.emit("betError", "User details not found.");
+
+        const gameDataKey = `GM:${info.urId}:${info.operatorId}`;
+        let gameData: IGameData = await getCache(gameDataKey);
+        if (gameData && gameData.mult_bank && gameData.status == "running") {
+            await cashoutHandler(socket);
+        }
+        await delCache(gameDataKey);
+
+        socket.emit("leave", "room left successfully")
+        return
+    } catch (error: any) {
+        console.error("error occured", error.message);
+    }
+}
+
+
+// const gameData = {
+//     lobby_id: generateUUIDv7(),
+//     user_id: playerDetails.user_id,
+//     operator_id: playerDetails.operatorId,
+//     mult_bank: 0,
+//     bet_amount: betData.btAmt,
+//     room_id: 101,
+//     category: betData.category,
+//     cardsHistory: [], // 8 cards , last will be the last card drawn when new card is picked will be compared with last card drawn
+//     deck: [], // all remaining cards
+//     revealedCount: 1,
+//     status: "running",// "win"|"loss"|"running",
+//     txn_id: "txnid",
+//     mults : {
+//     hi: 0,
+//     lo: 0,
+//     rd: 0,
+//     bl: 0,
+//     h: 0,
+//     c: 0,
+//     s: 0,
+//     d: 0
+//     }
+// };
+
+// const GAME_CATEGORY = {
+//     HI: "High",
+//     LO: "Low",
+//     RE: "Red",
+//     BL: "Black",
+//     H: "Heart",
+//     C: "Club",
+//     S: "Spade",
+//     D: "Diamond"
+// };
