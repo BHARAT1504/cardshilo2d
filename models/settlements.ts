@@ -1,23 +1,47 @@
 import { pool } from "../db/dbConnection"; // MySQL connection pool
-import type { IRoundResult } from "../interfaces";
 
 export class Settlements {
-    static async create({ user_id, round_id, operator_id, bet_amt, win_amt, bet_values, settled_bets, round_result, status }: {
+    static async create({
+        user_id,
+        round_id,
+        operator_id,
+        bet_amt,
+        win_amt,
+        settled_bets,
+        round_result,
+        status,
+    }: {
         user_id: string;
         round_id: string;
         operator_id: string;
         bet_amt: number;
         win_amt: number;
-        bet_values: Record<string, number>;
-        settled_bets: any;
-        round_result: IRoundResult;
-        status: string;
+        settled_bets: Record<string, any>;
+        round_result: {
+            cardsHistory: string[];
+            revealedCount: number;
+            status: string;
+            deck?: number;
+        };
+        status: "WIN" | "LOSS";
     }) {
         const query = `
-            INSERT INTO settlements (user_id, round_id, operator_id, bet_amt, win_amt, bet_values,settled_bets, round_result, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO settlements 
+            (user_id, round_id, operator_id, bet_amt, win_amt, settled_bets, round_result, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `;
-        const values = [user_id, round_id, operator_id, bet_amt, win_amt, JSON.stringify(bet_values), JSON.stringify(settled_bets), JSON.stringify(round_result), status];
+
+        const values = [
+            user_id,
+            round_id,
+            operator_id,
+            bet_amt,
+            win_amt,
+            JSON.stringify(settled_bets ?? {}),
+            JSON.stringify(round_result ?? {}),
+            status,
+        ];
+
         const [result] = await pool.execute(query, values);
         return result;
     }

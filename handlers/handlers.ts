@@ -4,6 +4,7 @@ import { delCache, getCache, setCache } from "../cache/redis";
 import { betChecker, generateDeck, probMultCalculator, resetGameState, shuffleDeck, validateBet } from "../utilities/roundResult";
 import { updateBalanceFromAccount } from "../utilities/v2Transactions";
 import { ROOM_CONFIG } from "../constants/constant";
+import { Settlements } from "../models/settlements";
 
 export const joinRoom = async (socket: Socket, rmId: string[]) => {
     try {
@@ -70,6 +71,7 @@ export const startGame = async (socket: Socket, payload: string[]) => {
 
 export const pickCard = async (socket: Socket, betData: string[]) => {
     try {
+        console.log("pick card called", betData);
         const info: Info = await getCache(socket.id);
         if (!info) socket.emit("betError", "User details not found.");
 
@@ -97,6 +99,7 @@ export const pickCard = async (socket: Socket, betData: string[]) => {
         gameData.status = win ? "win" : "loss";
         gameData.category = plAtn;
         gameData.mults = probMultCalculator(gameData.mult_bank, pkdCd, gameData.deck);
+        console.log("post pick card game data", gameData);
 
         if (!win) {
             socket.emit("pickCardResult", { message: "you loss", mult, chose, win, pickedCard: pkdCd, previousCard: cmprCd });
@@ -120,6 +123,7 @@ export const pickCard = async (socket: Socket, betData: string[]) => {
 
 export const cashoutHandler = async (socket: Socket) => {
     try {
+        console.log("cashout called");
         const info: Info = await getCache(socket.id);
         if (!info) socket.emit("betError", "User details not found.");
 
@@ -151,6 +155,33 @@ export const cashoutHandler = async (socket: Socket) => {
         await setCache(socket.id, info);
         socket.emit("info", info);
         socket.emit("cashout", "Cashout done successfully, cashout amount:" + payout.toFixed(2));
+
+        await Settlements.create({
+            user_id: info.urId,
+            round_id: gameData.txn_id,  // using txn_id as round identifier
+            operator_id: info.operatorId,
+            bet_amt: Number(gameData.bet_amount.toFixed(2)),
+            win_amt: Number(payout.toFixed(2)),
+
+            // settlement details
+            settled_bets: {
+                payout,
+                mult_bank: gameData.mult_bank,
+                category: gameData.category,
+                room_id: gameData.room_id,
+            },
+
+            // final round result (cards + status + revealed count)
+            round_result: {
+                cardsHistory: gameData.cardsHistory,
+                revealedCount: gameData.revealedCount,
+                status: gameData.status,
+                deck: gameData.deck.length, // just store count, not full deck for DB optimization
+            },
+
+            status: payout > 0 ? "WIN" : "LOSS",
+        });
+
 
         const shuffledDeck = shuffleDeck(generateDeck());
         const firstEightCards = shuffledDeck.splice(0, 8);

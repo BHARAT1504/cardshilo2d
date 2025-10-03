@@ -279,24 +279,24 @@ export const resetGameState = (info: Info, roomId: TRoomId, betAmt: number = 0, 
 
 export const validateBet = (btAmt: number, roomId: keyof typeof ROOM_CONFIG, balance: number, socket: Socket): boolean => {
     if (isNaN(btAmt)) {
-        socket.emit("bet_error", "Invalid bet amount type");
+        socket.emit("betError", "Invalid bet amount type");
         return false;
     }
 
     if (btAmt > balance) {
-        socket.emit("bet_error", "Insufficient Balance");
+        socket.emit("betError", "Insufficient Balance");
         return false;
     }
 
     const room = ROOM_CONFIG[roomId];
     if (!room) {
-        socket.emit("bet_error", "Invalid Room ID");
+        socket.emit("betError", "Invalid Room ID");
         return false;
     }
 
     if (btAmt < room.min_bet || btAmt > room.max_bet) {
         socket.emit(
-            "bet_error",
+            "betError",
             `Invalid bet amount. Allowed range: ${room.min_bet} - ${room.max_bet}`
         );
         return false;
