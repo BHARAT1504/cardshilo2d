@@ -5,7 +5,6 @@ import { betChecker, generateDeck, probMultCalculator, resetGameState, shuffleDe
 import { updateBalanceFromAccount } from "../utilities/v2Transactions";
 import { ROOM_CONFIG } from "../constants/constant";
 
-
 export const joinRoom = async (socket: Socket, rmId: string[]) => {
     try {
         const info: Info = await getCache(socket.id);
@@ -13,13 +12,14 @@ export const joinRoom = async (socket: Socket, rmId: string[]) => {
 
         let roomId = rmId.join("");
         if (!roomId || !Object.keys(ROOM_CONFIG).includes(roomId)) return socket.emit("betError", "invalid room id");
+        if (socket.rooms.size > 2) return socket.emit("betError", "Cannot join multiple rooms at once.");
 
         const shuffledDeck = shuffleDeck(generateDeck());
         const firstEightCards = shuffledDeck.splice(0, 8);
 
         const gameData = resetGameState(info, roomId as TRoomId, 0, firstEightCards, shuffledDeck);
         await setCache(`GM:${info.urId}:${info.operatorId}`, gameData);
-        socket.emit("gameData", gameData)
+        socket.emit("gameData", { ...gameData, deck: [] })
 
         return;
     } catch (error: any) {
@@ -33,13 +33,15 @@ export const startGame = async (socket: Socket, payload: string[]) => {
         if (!info) return socket.emit("betError", "User details not found.");
 
         let [roomId, betAmt, atn]: [TRoomId, string, string] = payload as [TRoomId, string, string];
-        console.log([roomId, betAmt, atn]);
+
         const isValidBetAmount = validateBet(Number(betAmt), roomId, info.bl, socket);
         if (!isValidBetAmount) return;
+        if ([...socket.rooms].includes(roomId)) return socket.emit("betError", "Room not joined yet.");
 
         const gameDataKey = `GM:${info.urId}:${info.operatorId}`;
         const gameData: IGameData = await getCache(gameDataKey);
         if (!gameData) return socket.emit("betError", "invalid bet session");
+        if (gameData.txn_id) return socket.emit("betError", "previous game not ended")
 
         const debitTransaction = {
             id: gameData.lobby_id,
@@ -74,35 +76,40 @@ export const pickCard = async (socket: Socket, betData: string[]) => {
         const gameDataKey = `GM:${info.urId}:${info.operatorId}`;
         let gameData: IGameData = await getCache(gameDataKey);
         if (!gameData) return socket.emit("betError", "Game play data not found");
+        if (!gameData.txn_id) return socket.emit("betError", "Game not started, cannot pick card")
 
         const plAtn = betData.join("");
-        if (!PlrBetActions.includes(plAtn)) return socket.emit("betError", "Invalid Action");
+        if (!PlrBetActions.includes(plAtn)) return socket.emit("betError", "Invalid action");
 
         const pkCdIdx = Math.floor(Math.random() * gameData.deck.length);
         const pkdCd = gameData.deck.splice(pkCdIdx, 1).join("");
 
         const cmprCd = gameData.cardsHistory[gameData.cardsHistory.length - 1];
-        gameData.cardsHistory.push(pkdCd);
+
+        const { chose, mult, win } = betChecker(gameData.mults, pkdCd, cmprCd, plAtn as BetAction)
+
         const cardToPushInDeck = gameData.cardsHistory.shift();
-
+        gameData.cardsHistory.push(pkdCd);
         gameData.deck.push(cardToPushInDeck as string);
-
         gameData.category = plAtn;
         gameData.revealedCount++;
-        const { chose, mult, win } = betChecker(gameData.mults, pkdCd, cmprCd, plAtn as BetAction)
         gameData.mult_bank += mult;
         gameData.status = win ? "win" : "loss";
-        gameData.category = chose;
-        gameData.mults = probMultCalculator(gameData.mult_bank, pkdCd);
+        gameData.category = plAtn;
+        gameData.mults = probMultCalculator(gameData.mult_bank, pkdCd, gameData.deck);
 
         if (!win) {
-            gameData = resetGameState(info, gameData.room_id as TRoomId, 0, gameData.cardsHistory, gameData.deck)
-            socket.emit("pickCardResult", { message: "you loss" });
+            socket.emit("pickCardResult", { message: "you loss", mult, chose, win, pickedCard: pkdCd, previousCard: cmprCd });
+            socket.emit("gameData", { ...gameData, deck: [] });
+            gameData = resetGameState(info, gameData.room_id as TRoomId, 0, gameData.cardsHistory, gameData.deck);
         }
         await setCache(gameDataKey, gameData);
-        socket.emit("gameData", gameData);
 
-        socket.emit("pickCardResult", { message: "card picked successfully", mult, chose, win });
+        if (win) socket.emit("pickCardResult", { message: "card picked successfully", mult, chose, win });
+        setTimeout(() => {
+            socket.emit("gameData", { ...gameData, deck: [] });
+        }, 1000);
+
 
         return;
 
@@ -143,13 +150,13 @@ export const cashoutHandler = async (socket: Socket) => {
         info.bl += Number(payout.toFixed(2));
         await setCache(socket.id, info);
         socket.emit("info", info);
-        socket.emit("cashout", "Cashout done successfully, cashout amount:" + payout);
+        socket.emit("cashout", "Cashout done successfully, cashout amount:" + payout.toFixed(2));
 
         const shuffledDeck = shuffleDeck(generateDeck());
         const firstEightCards = shuffledDeck.splice(0, 8);
         gameData = resetGameState(info, gameData.room_id as TRoomId, 0, firstEightCards, shuffledDeck)
         await setCache(gameDataKey, gameData);
-        socket.emit("gameData", gameData);
+        socket.emit("gameData", { ...gameData, deck: [] });
 
         return;
     } catch (error: any) {

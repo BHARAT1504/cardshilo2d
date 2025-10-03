@@ -91,6 +91,10 @@ export interface Mults {
     LO: MultResult;
     SM: MultResult;
     RB: MultResult;
+    H: MultResult;
+    C: MultResult;
+    S: MultResult;
+    D: MultResult;
 }
 
 export type BetAction = "HI" | "LO" | "SM" | "BL" | "RD" | "H" | "C" | "D" | "S";
@@ -123,17 +127,17 @@ export interface IGameData {
     cardsHistory: string[]; // 8 cards (like "H10", "S3" etc.)
     deck: string[];
     revealedCount: number;
-    status: "started" | "ended" | "not_started" | "win" | "loss" | "running";
+    status: "not_started" | "win" | "loss" | "running";
     txn_id: string;
     mults: {
         HI: { prob: number; mult: number };
         LO: { prob: number; mult: number };
         SM: { prob: number; mult: number };
         RB: { prob: number; mult: number };
-        H?: { prob: number; mult: number }; // suits if you added them
-        C?: { prob: number; mult: number };
-        D?: { prob: number; mult: number };
-        S?: { prob: number; mult: number };
+        H: { prob: number; mult: number }; // suits if you added them
+        C: { prob: number; mult: number };
+        D: { prob: number; mult: number };
+        S: { prob: number; mult: number };
     };
     roomConfig: (typeof ROOM_CONFIG)[TRoomId];
 }

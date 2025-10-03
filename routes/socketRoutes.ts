@@ -3,6 +3,7 @@ import type { Info } from "../interfaces";
 import { delCache, getCache } from "../cache/redis";
 import { Settlements } from "../models/settlements";
 import { startGame, pickCard, leaveRoom, cashoutHandler, joinRoom } from "../handlers/handlers";
+import { ROOM_CONFIG } from "../constants/constant";
 
 export const socketRouter = async (io: Namespace, socket: Socket) => {
     try {
@@ -14,6 +15,7 @@ export const socketRouter = async (io: Namespace, socket: Socket) => {
             lastWin = lastWin.win_amt;
         }
         setTimeout(() => {
+            socket.emit("roomConfig", ROOM_CONFIG);
             if (lastWin) socket.emit('lastWin', { lastWin: lastWin && typeof lastWin === "number" ? Number(lastWin).toFixed(2) : "0.00" });
         }, 100);
 
@@ -26,7 +28,7 @@ export const socketRouter = async (io: Namespace, socket: Socket) => {
                 case "ST":
                     await startGame(socket, betData);
                     break;
-                case "PB":
+                case "PC":
                     await pickCard(socket, betData);
                     break;
                 case "CO":
